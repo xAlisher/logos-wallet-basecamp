@@ -63,6 +63,12 @@ QString WalletPlugin::runWalletCommand(const QStringList& args, int timeoutMs)
     proc.setProcessChannelMode(QProcess::MergedChannels);
     proc.start(bin, args);
 
+    if (!proc.waitForStarted(3000)) {
+        appendLog(QStringLiteral("failed to start: ") + proc.errorString(), QStringLiteral("error"));
+        return errorJson(QStringLiteral("wallet CLI not found: ") + bin
+                         + QStringLiteral(" — configure path in ⚙ settings"));
+    }
+
     if (!proc.waitForFinished(timeoutMs)) {
         proc.kill();
         appendLog(QStringLiteral("timeout after %1ms").arg(timeoutMs), QStringLiteral("error"));
