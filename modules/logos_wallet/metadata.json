@@ -1,0 +1,12 @@
+{
+  "name": "logos_wallet",
+  "version": "0.1.0",
+  "description": "Native token wallet — accounts, faucet, keycard-gated transfers",
+  "author": "Logos Wallet",
+  "type": "core",
+  "main": "logos_wallet_plugin",
+  "dependencies": [],
+  "category": "blockchain",
+  "capabilities": [],
+  "icon": ""
+}

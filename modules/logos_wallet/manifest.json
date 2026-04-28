@@ -1,0 +1,17 @@
+{
+  "author": "Logos Wallet",
+  "category": "blockchain",
+  "dependencies": [],
+  "description": "Native token wallet — accounts, faucet, keycard-gated transfers",
+  "icon": "",
+  "main": {
+    "linux-amd64":       "logos_wallet_plugin.so",
+    "linux-amd64-dev":   "logos_wallet_plugin.so",
+    "linux-x86_64-dev":  "logos_wallet_plugin.so",
+    "darwin-arm64":      "logos_wallet_plugin.dylib"
+  },
+  "manifestVersion": "0.2.0",
+  "name": "logos_wallet",
+  "type": "core",
+  "version": "0.1.0"
+}

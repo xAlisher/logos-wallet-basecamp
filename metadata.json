@@ -1,0 +1,28 @@
+{
+  "name": "logos_wallet",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "blockchain",
+  "description": "Native token wallet — accounts, faucet, keycard-gated transfers",
+  "main": "logos_wallet_plugin",
+  "icon": "",
+  "dependencies": [],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": ["Qt6 COMPONENTS Core Qml Network"],
+      "extra_sources": [
+        "src/plugin/WalletPlugin.cpp"
+      ],
+      "extra_include_dirs": [
+        "src"
+      ],
+      "extra_link_libraries": []
+    }
+  }
+}

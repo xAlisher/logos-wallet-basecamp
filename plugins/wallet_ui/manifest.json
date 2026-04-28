@@ -1,0 +1,13 @@
+{
+  "author": "Logos Wallet",
+  "category": "blockchain",
+  "dependencies": ["logos_wallet"],
+  "description": "Native token wallet UI",
+  "icon": "icons/wallet.png",
+  "main": {},
+  "manifestVersion": "0.2.0",
+  "name": "wallet_ui",
+  "type": "ui_qml",
+  "version": "0.1.0",
+  "view": "qml/Main.qml"
+}
