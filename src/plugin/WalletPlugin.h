@@ -39,10 +39,13 @@ public:
     // Faucet
     Q_INVOKABLE QString claimFaucet(const QString& accountId);
 
-    // Transfer — keycard auth must be performed in QML before calling this
+    // Transfer
     Q_INVOKABLE QString sendTransfer(const QString& from,
                                      const QString& to,
                                      const QString& amount);
+
+    // Transaction history (locally stored)
+    Q_INVOKABLE QString getTransactions(const QString& accountId);
 
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
@@ -55,6 +58,7 @@ private:
     static QString okJson();
 
     void appendLog(const QString& line, const QString& level = QStringLiteral("info"));
+    void saveTx(const QString& accountId, const QJsonObject& entry);
 
     struct LogEntry { QString ts; QString msg; QString level; };
     QList<LogEntry> m_log;

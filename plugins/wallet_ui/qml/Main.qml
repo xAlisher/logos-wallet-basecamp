@@ -15,36 +15,32 @@ Rectangle {
     readonly property color textSecondary: "#9CA3AF"
     readonly property color textDisabled:  "#4B5563"
     readonly property color successGreen:  "#22C55E"
-    readonly property color warnAmber:     "#F59E0B"
     readonly property color errorRed:      "#EF4444"
-    readonly property color accentBlue:    "#38BDF8"
+    readonly property color accentOrange:  "#F97316"
 
     // ── State ─────────────────────────────────────────────────────────────────
-    property int    activeTab:       0   // 0=Accounts  1=Send
-    property bool   settingsOpen:    false
-    property bool   cliFound:        false
-    property string cliPath:         ""
-    property var    accounts:        []
-    property bool   pollBusy:        false
-    property string statusMsg:       ""
-    property bool   statusIsError:   false
+    property bool   settingsOpen:        false
+    property bool   cliFound:            false
+    property string cliPath:             ""
+    property var    accounts:            []
+    property bool   pollBusy:            false
 
-    // Send tab state
-    property string sendFrom:        ""
-    property string sendStatus:      ""
-    property bool   sendBusy:        false
+    property string selectedFromId:      ""
+    property string selectedFromBalance: ""
+    property string sendStatus:          ""
+    property bool   sendBusy:            false
+    property bool   sendOpen:            false
+    property var    txHistory:           []
 
-    // Keycard auth state
-    property string kcAuthId:        ""
-    property bool   kcPending:       false
-    property string pendingFrom:     ""
-    property string pendingTo:       ""
-    property string pendingAmount:   ""
-
-    // Activity log (last 20 ops)
-    property var    activityLog:     []
+    property var    activityLog:         []
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+    function displayId(id) {
+        if (id.indexOf("Public/") === 0)  return id.slice(7)
+        if (id.indexOf("Private/") === 0) return id.slice(8)
+        return id
+    }
+
     function callModuleParse(raw) {
         try {
             var t = JSON.parse(raw)
@@ -73,18 +69,24 @@ Rectangle {
         if (!r) return
         if (r.error) { logActivity("listAccounts: " + r.error, true); return }
 
-        // Accept array at top level or wrapped in {accounts:[...]} or {output:"..."}
         var arr = []
         if (Array.isArray(r)) {
             arr = r
         } else if (r.accounts && Array.isArray(r.accounts)) {
             arr = r.accounts
         } else if (r.output) {
-            // CLI returned plain text — show raw
-            accountModel.append({ id: r.output, type: "", balance: "" })
+            accountModel.append({ id: r.output, type: "public", balance: "" })
             return
         }
         root.accounts = arr
+
+        arr.sort(function(a, b) {
+            var ta = (a.type || "public"), tb = (b.type || "public")
+            if (ta === "public" && tb !== "public") return -1
+            if (ta !== "public" && tb === "public") return 1
+            return (parseFloat(b.balance) || 0) - (parseFloat(a.balance) || 0)
+        })
+
         for (var i = 0; i < arr.length; i++) {
             var a = arr[i]
             accountModel.append({
@@ -92,6 +94,16 @@ Rectangle {
                 type:    a.type    || "public",
                 balance: a.balance !== undefined ? String(a.balance) : "—"
             })
+        }
+
+        // Update balance of already-selected account (don't change selection)
+        if (root.selectedFromId.length > 0) {
+            for (var j = 0; j < accountModel.count; j++) {
+                if (accountModel.get(j).id === root.selectedFromId) {
+                    root.selectedFromBalance = accountModel.get(j).balance
+                    break
+                }
+            }
         }
     }
 
@@ -104,86 +116,38 @@ Rectangle {
         }
     }
 
-    // ── Keycard auth flow ─────────────────────────────────────────────────────
-    function authorizeAndSend(from, to, amount) {
+    function refreshTxHistory() {
+        if (typeof logos === "undefined" || !logos.callModule) return
+        if (root.selectedFromId.length === 0) return
+        var r = callModuleParse(logos.callModule("logos_wallet", "getTransactions", [root.selectedFromId]))
+        root.txHistory = Array.isArray(r) ? r : []
+        txHistoryModel.clear()
+        for (var i = 0; i < root.txHistory.length; i++)
+            txHistoryModel.append(root.txHistory[i])
+    }
+
+    function executeSend(from, to, amount) {
         if (typeof logos === "undefined" || !logos.callModule) {
             root.sendStatus = "Module not available"
             return
         }
-        root.pendingFrom   = from
-        root.pendingTo     = to
-        root.pendingAmount = amount
-        root.sendBusy      = true
-        root.sendStatus    = "Requesting Keycard approval…"
-        logActivity("Requesting keycard auth for transfer", false)
-
-        var authResp = callModuleParse(
-            logos.callModule("keycard", "requestAuth", ["wallet_transfer", "logos_wallet"])
-        )
-        if (!authResp || !authResp.authId) {
-            root.sendBusy   = false
-            root.sendStatus = "Keycard unavailable — " + (authResp && authResp.error ? authResp.error : "no authId")
-            logActivity(root.sendStatus, true)
-            return
-        }
-        root.kcAuthId  = authResp.authId
-        root.kcPending = true
-        kcPollTimer.start()
-    }
-
-    Timer {
-        id: kcPollTimer
-        interval: 1000; repeat: true
-        onTriggered: {
-            if (!root.kcPending) { stop(); return }
-            var r = root.callModuleParse(
-                logos.callModule("keycard", "checkAuthStatus", [root.kcAuthId])
-            )
-            if (!r) return
-            if (r.error) {
-                stop()
-                root.kcPending  = false
-                root.sendBusy   = false
-                root.sendStatus = "Keycard auth expired: " + r.error
-                root.logActivity(root.sendStatus, true)
-                return
-            }
-            if (r.status === "complete") {
-                stop()
-                root.kcPending = false
-                root.sendStatus = "Keycard approved — sending…"
-                root.logActivity("Keycard approved, executing transfer", false)
-                executeSend()
-            } else if (r.status === "rejected") {
-                stop()
-                root.kcPending  = false
-                root.sendBusy   = false
-                root.sendStatus = "Transfer declined by keycard"
-                root.logActivity(root.sendStatus, true)
-            }
-            // "pending" → keep polling
-        }
-    }
-
-    function executeSend() {
+        root.sendBusy = true
+        root.sendOpen = false   // close form immediately
         var result = callModuleParse(
-            logos.callModule("logos_wallet", "sendTransfer",
-                [root.pendingFrom, root.pendingTo, root.pendingAmount])
+            logos.callModule("logos_wallet", "sendTransfer", [from, to, amount])
         )
         root.sendBusy = false
         if (!result || result.error) {
-            root.sendStatus = "Transfer failed: " + (result && result.error ? result.error : "unknown")
-            logActivity(root.sendStatus, true)
+            logActivity("Transfer failed: " + (result && result.error ? result.error : "unknown"), true)
         } else {
-            root.sendStatus = "Transfer submitted"
-            logActivity("Transfer: " + root.pendingFrom + " → " + root.pendingTo
-                        + " (" + root.pendingAmount + " tok)", false)
+            logActivity("Transfer: " + displayId(from) + " → " + displayId(to)
+                        + " (" + amount + " TOK)", false)
             balanceRefreshTimer.restart()
+            refreshTxHistory()
         }
-        root.pendingFrom = ""; root.pendingTo = ""; root.pendingAmount = ""
     }
 
-    // ── Poll / timers ─────────────────────────────────────────────────────────
+    // ── Timers ────────────────────────────────────────────────────────────────
     Timer {
         interval: 10000; running: true; repeat: true
         onTriggered: {
@@ -206,46 +170,68 @@ Rectangle {
         if (cfg && cfg.cliPathEff) cliPathField.text = cfg.cliPathEff
         root.refreshStatus()
         root.refreshAccounts()
+        if (!root.cliFound) root.settingsOpen = true
+    }
+
+    onSelectedFromIdChanged: {
+        root.txHistory = []
+        txHistoryModel.clear()
+        root.sendOpen = false
+        toField.text = ""
+        amountField.text = ""
+        root.refreshTxHistory()
     }
 
     TextEdit { id: clipHelper; visible: false }
 
     // ── Root layout ───────────────────────────────────────────────────────────
     ColumnLayout {
-        anchors.fill: parent
-        spacing: 0
+        anchors { fill: parent; margins: 12 }
+        spacing: 10
 
-        // ── Toolbar ───────────────────────────────────────────────────────────
+        // ── Header ────────────────────────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 12; Layout.leftMargin: 12; Layout.rightMargin: 12
             spacing: 8
 
-            Rectangle { width: 8; height: 8; radius: 4
-                color: root.cliFound ? root.successGreen : root.errorRed }
-            Text { text: root.cliFound ? "CLI ready" : "CLI not found"
-                   color: root.textSecondary; font.pixelSize: 12 }
+            ColumnLayout {
+                spacing: 2
+                Text { text: "Wallet"; font.pixelSize: 20; font.bold: true; color: root.textPrimary }
+                Text { text: "Logos testnet"; font.pixelSize: 11; color: root.textSecondary }
+            }
 
             Item { Layout.fillWidth: true }
 
             Rectangle {
-                width: 24; height: 24; radius: 4; color: "transparent"
-                border.color: root.settingsOpen ? root.accentBlue : root.borderColor
-                Text { anchors.centerIn: parent; text: "⚙"
-                       color: root.settingsOpen ? root.accentBlue : root.textSecondary
-                       font.pixelSize: 12 }
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.settingsOpen = !root.settingsOpen }
+                height: 24; implicitWidth: cliPillRow.implicitWidth + 16; radius: 12
+                color: Qt.rgba(0.07, 0.07, 0.07, 1); border.color: root.borderColor; border.width: 1
+                RowLayout {
+                    id: cliPillRow
+                    anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
+                    spacing: 5
+                    Rectangle {
+                        width: 6; height: 6; radius: 3
+                        color: root.cliFound ? root.successGreen : root.errorRed
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    Text { text: root.cliFound ? "CLI ready" : "CLI not found"; font.pixelSize: 11; color: root.textPrimary }
+                }
+            }
+
+            Rectangle {
+                width: 28; height: 28; radius: 6; color: "transparent"
+                border.color: root.settingsOpen ? root.accentOrange : root.borderColor; border.width: 1
+                Text { anchors.centerIn: parent; text: "⚙"; font.pixelSize: 14; color: root.settingsOpen ? root.accentOrange : root.textSecondary }
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.settingsOpen = !root.settingsOpen }
             }
         }
 
         // ── Settings panel ────────────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.leftMargin: 12; Layout.rightMargin: 12
             visible: root.settingsOpen
             height: visible ? settingsInner.implicitHeight + 20 : 0
-            color: root.panelColor; border.color: root.borderColor; radius: 4
+            color: root.panelColor; border.color: root.borderColor; border.width: 1; radius: 4
 
             ColumnLayout {
                 id: settingsInner
@@ -253,26 +239,29 @@ Rectangle {
                 spacing: 8
 
                 Text { text: "Wallet CLI path"; color: root.textSecondary; font.pixelSize: 10 }
-                Rectangle { Layout.fillWidth: true; height: 26; color: "#0A0A0A"
+                Rectangle {
+                    Layout.fillWidth: true; height: 26; color: "#0A0A0A"
                     border.color: root.borderColor; radius: 3
-                    TextInput { id: cliPathField
+                    TextInput {
+                        id: cliPathField
                         anchors { fill: parent; leftMargin: 6; rightMargin: 6 }
                         verticalAlignment: TextInput.AlignVCenter
                         color: root.textPrimary; font.pixelSize: 11; font.family: "monospace"; clip: true
-                        Text { anchors.fill: parent; verticalAlignment: Text.AlignVCenter
-                               text: parent.text.length === 0 ? "~/.local/bin/wallet" : ""
-                               color: root.textDisabled; font.pixelSize: 11; font.family: "monospace" }
+                        Text {
+                            anchors.fill: parent; verticalAlignment: Text.AlignVCenter
+                            text: parent.text.length === 0 ? "~/.local/bin/wallet" : ""
+                            color: root.textDisabled; font.pixelSize: 11; font.family: "monospace"
+                        }
                     }
                 }
-
                 RowLayout {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
-                    Rectangle { width: 56; height: 24; radius: 4; color: "transparent"
-                        border.color: root.successGreen
-                        Text { anchors.centerIn: parent; text: "Save"
-                               color: root.successGreen; font.pixelSize: 11 }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    Rectangle {
+                        width: 56; height: 24; radius: 4; color: "transparent"; border.color: root.accentOrange
+                        Text { anchors.centerIn: parent; text: "Save"; color: root.accentOrange; font.pixelSize: 11 }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 logos.callModule("logos_wallet", "setCliPath", [cliPathField.text])
                                 root.settingsOpen = false
@@ -284,276 +273,422 @@ Rectangle {
             }
         }
 
-        // ── Tab bar ───────────────────────────────────────────────────────────
+        // ── Two-column body ───────────────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 10; Layout.leftMargin: 12; Layout.rightMargin: 12
-            spacing: 0
-
-            Repeater {
-                model: ["Accounts", "Send"]
-                delegate: Item {
-                    required property string modelData
-                    required property int    index
-                    Layout.fillWidth: true; height: 28
-
-                    Text { anchors.centerIn: parent; text: modelData
-                           color: root.activeTab === index ? root.textPrimary : root.textDisabled
-                           font.pixelSize: 12; font.bold: root.activeTab === index }
-                    Rectangle {
-                        anchors { bottom: parent.bottom; left: parent.left; right: parent.right }
-                        height: 2; radius: 1
-                        color: root.activeTab === index ? root.accentBlue : root.borderColor
-                    }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.activeTab = index }
-                }
-            }
-        }
-
-        // ── Tab content ───────────────────────────────────────────────────────
-        Item {
-            Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.topMargin: 8
+            spacing: 10
 
-            // ── ACCOUNTS TAB ──────────────────────────────────────────────────
-            ColumnLayout {
-                visible: root.activeTab === 0
-                anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
-                spacing: 8
+            // ── LEFT COLUMN — accounts ────────────────────────────────────────
+            Rectangle {
+                Layout.preferredWidth: 180
+                Layout.minimumWidth: 140
+                Layout.fillHeight: true
+                color: root.panelColor; border.color: root.borderColor; border.width: 1; radius: 6
 
-                // Account list
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    color: root.panelColor; border.color: root.borderColor; radius: 4
+                ColumnLayout {
+                    anchors { fill: parent; margins: 8 }
+                    spacing: 6
 
-                    Text { anchors.centerIn: parent
-                           visible: accountModel.count === 0
-                           text: "No accounts yet — click New Account"
-                           color: root.textDisabled; font.pixelSize: 11 }
+                    Text {
+                        text: "ACCOUNTS"
+                        color: root.accentOrange; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                    }
 
                     ListView {
                         id: accountListView
-                        anchors { fill: parent; margins: 6 }
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
                         model: ListModel { id: accountModel }
-                        clip: true; spacing: 4
+                        clip: true; spacing: 2
+
+                        section.property: "type"
+                        section.delegate: RowLayout {
+                            width: accountListView.width
+                            height: 20
+                            spacing: 6
+                            Text {
+                                text: section === "public" ? "PUBLIC" : "PRIVATE"
+                                color: root.textDisabled
+                                font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                                Layout.leftMargin: 2
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true; height: 1
+                                color: root.borderColor
+                            }
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: accountModel.count === 0
+                            text: "No accounts"; color: root.textDisabled; font.pixelSize: 11
+                        }
 
                         delegate: Rectangle {
                             required property string id
                             required property string type
                             required property string balance
-                            width: accountListView.width; height: 40
-                            color: "#0D0D0D"; radius: 3
+                            width: accountListView.width
+                            height: 40
+                            radius: 4
+                            color: root.selectedFromId === id
+                                   ? Qt.rgba(249/255, 115/255, 22/255, 0.10)
+                                   : (rowMa.containsMouse ? Qt.rgba(1,1,1,0.04) : "transparent")
+                            border.color: root.selectedFromId === id
+                                          ? Qt.rgba(249/255, 115/255, 22/255, 0.4)
+                                          : "transparent"
+                            border.width: 1
 
-                            RowLayout {
-                                anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
-                                spacing: 8
+                            ColumnLayout {
+                                anchors { fill: parent; leftMargin: 8; rightMargin: 8; topMargin: 5; bottomMargin: 5 }
+                                spacing: 2
 
-                                Rectangle { width: 6; height: 6; radius: 3
-                                    color: root.accentBlue }
-                                Text { text: id.length > 32 ? id.substring(0, 28) + "…" : id
-                                       color: root.textPrimary; font.pixelSize: 11
-                                       font.family: "monospace"; Layout.fillWidth: true
-                                       elide: Text.ElideRight }
-                                Text { text: balance !== "" ? balance + " tok" : "—"
-                                       color: balance !== "" && balance !== "0" ? root.successGreen : root.textDisabled
-                                       font.pixelSize: 11; font.bold: true }
+                                Text {
+                                    text: root.displayId(id)
+                                    color: root.selectedFromId === id ? root.textPrimary : root.textSecondary
+                                    font.pixelSize: 10; font.family: "monospace"
+                                    Layout.fillWidth: true; elide: Text.ElideMiddle
+                                }
+                                Text {
+                                    visible: balance !== "" && balance !== "—"
+                                    text: balance + " TOK"
+                                    color: root.selectedFromId === id ? root.accentOrange : root.textDisabled
+                                    font.pixelSize: 9
+                                }
+                            }
+
+                            MouseArea {
+                                id: rowMa
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.selectedFromId      = id
+                                    root.selectedFromBalance = balance
+                                }
                             }
                         }
                     }
-                }
 
-                // Account action buttons
-                RowLayout {
-                    Layout.fillWidth: true; spacing: 6
-
-                    Rectangle { height: 28; Layout.fillWidth: true; radius: 4; color: "transparent"
-                        border.color: root.accentBlue
-                        Text { anchors.centerIn: parent; text: "+ New Account"
-                               color: root.accentBlue; font.pixelSize: 11 }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    Rectangle {
+                        Layout.fillWidth: true; height: 30; radius: 4; color: "transparent"
+                        border.color: root.accentOrange
+                        Text { anchors.centerIn: parent; text: "+ New Account"; color: root.accentOrange; font.pixelSize: 11 }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                root.logActivity("Creating new public account…", false)
-                                var r = root.callModuleParse(
-                                    logos.callModule("logos_wallet", "createAccount", []))
-                                if (r && r.error) {
-                                    root.logActivity("createAccount: " + r.error, true)
-                                } else {
-                                    root.logActivity("Account created", false)
-                                    balanceRefreshTimer.restart()
-                                }
+                                root.logActivity("Creating new account…", false)
+                                var r = root.callModuleParse(logos.callModule("logos_wallet", "createAccount", []))
+                                if (r && r.error) root.logActivity("createAccount: " + r.error, true)
+                                else { root.logActivity("Account created", false); balanceRefreshTimer.restart() }
                             }
                         }
-                    }
-
-                    Rectangle { height: 28; Layout.fillWidth: true; radius: 4; color: "transparent"
-                        border.color: root.warnAmber
-                        Text { anchors.centerIn: parent; text: "Claim Faucet"
-                               color: root.warnAmber; font.pixelSize: 11 }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                if (accountModel.count === 0) {
-                                    root.logActivity("No accounts — create one first", true)
-                                    return
-                                }
-                                // Use first account
-                                var acctId = accountModel.get(0).id
-                                root.logActivity("Claiming faucet → " + acctId.substring(0, 20) + "…", false)
-                                var r = root.callModuleParse(
-                                    logos.callModule("logos_wallet", "claimFaucet", [acctId]))
-                                if (r && r.error) {
-                                    root.logActivity("claimFaucet: " + r.error, true)
-                                } else {
-                                    root.logActivity("Faucet claim submitted (150 tok)", false)
-                                    balanceRefreshTimer.restart()
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle { height: 28; width: 36; radius: 4; color: "transparent"
-                        border.color: root.borderColor
-                        Text { anchors.centerIn: parent; text: "↺"
-                               color: root.textSecondary; font.pixelSize: 14 }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.refreshAccounts() }
                     }
                 }
             }
 
-            // ── SEND TAB ──────────────────────────────────────────────────────
+            // ── RIGHT COLUMN — balance + actions ─────────────────────────────
             ColumnLayout {
-                visible: root.activeTab === 1
-                anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
-                spacing: 8
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 10
 
-                // Keycard warning if no card present
+                // Big balance card
                 Rectangle {
-                    Layout.fillWidth: true; height: 30; radius: 4
-                    color: Qt.rgba(245/255, 158/255, 11/255, 0.08)
-                    border.color: root.warnAmber
-                    visible: true
+                    Layout.fillWidth: true
+                    height: 96
+                    color: root.panelColor; border.color: root.borderColor; border.width: 1; radius: 6
 
-                    Text { anchors.centerIn: parent
-                           text: "⚠  Keycard approval required before each transfer"
-                           color: root.warnAmber; font.pixelSize: 11 }
-                }
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 4
 
-                // From
-                Text { text: "From"; color: root.textSecondary; font.pixelSize: 10 }
-                Rectangle { Layout.fillWidth: true; height: 26; color: "#0A0A0A"
-                    border.color: root.borderColor; radius: 3
+                        // Amount row: number + TOK (same size)
+                        Row {
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 8
 
-                    ComboBox {
-                        id: fromCombo
-                        anchors.fill: parent
-                        model: ListModel { id: fromModel }
-                        textRole: "id"
-                        background: Rectangle { color: "transparent" }
-                        contentItem: Text {
-                            leftPadding: 6
-                            text: fromCombo.currentIndex >= 0 && fromModel.count > 0
-                                  ? fromModel.get(fromCombo.currentIndex).id : "— select account —"
-                            color: fromCombo.currentIndex >= 0 ? root.textPrimary : root.textDisabled
-                            font.pixelSize: 11; font.family: "monospace"
-                            verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                            Text {
+                                text: (root.selectedFromBalance !== "" && root.selectedFromBalance !== "—")
+                                      ? root.selectedFromBalance : "0"
+                                font.pixelSize: 38; font.bold: true; color: root.textPrimary
+                            }
+                            Text {
+                                text: "TOK"
+                                font.pixelSize: 38; font.bold: true; color: root.accentOrange
+                            }
                         }
-                        indicator: Text { anchors.right: parent.right; anchors.rightMargin: 8
-                                          anchors.verticalCenter: parent.verticalCenter
-                                          text: "▼"; color: root.textDisabled; font.pixelSize: 9 }
-                        popup: Popup {
-                            y: fromCombo.height; width: fromCombo.width; padding: 0
-                            background: Rectangle { color: root.panelColor; border.color: root.borderColor; radius: 3 }
-                            contentItem: ListView {
-                                model: fromCombo.model; clip: true
-                                implicitHeight: Math.min(contentHeight, 120)
-                                delegate: Item {
-                                    required property string id
-                                    required property int    index
-                                    width: parent ? parent.width : 0; height: 26
-                                    Text { anchors { fill: parent; leftMargin: 6 }
-                                           text: id; color: root.textPrimary; font.pixelSize: 11
-                                           font.family: "monospace"; verticalAlignment: Text.AlignVCenter
-                                           elide: Text.ElideRight }
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                        onClicked: { fromCombo.currentIndex = index; fromCombo.popup.close() } }
+
+                        // Selected address + copy button
+                        RowLayout {
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 4
+                            visible: root.selectedFromId.length > 0
+
+                            Text {
+                                text: root.displayId(root.selectedFromId)
+                                color: root.textDisabled; font.pixelSize: 10; font.family: "monospace"
+                                elide: Text.ElideMiddle
+                                Layout.maximumWidth: 220
+                            }
+
+                            Item {
+                                width: 16; height: 16
+                                Image {
+                                    anchors.centerIn: parent
+                                    width: 12; height: 12
+                                    source: "icons/Copy.svg"; fillMode: Image.PreserveAspectFit
+                                    opacity: addrCopyArea.pressed ? 0.4 : addrCopyArea.containsMouse ? 0.9 : 0.5
+                                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                                }
+                                MouseArea {
+                                    id: addrCopyArea
+                                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        clipHelper.text = root.selectedFromId
+                                        clipHelper.selectAll(); clipHelper.copy()
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // To
-                Text { text: "To"; color: root.textSecondary; font.pixelSize: 10 }
-                Rectangle { Layout.fillWidth: true; height: 26; color: "#0A0A0A"
-                    border.color: root.borderColor; radius: 3
-                    TextInput { id: toField
-                        anchors { fill: parent; leftMargin: 6; rightMargin: 6 }
-                        verticalAlignment: TextInput.AlignVCenter
-                        color: root.textPrimary; font.pixelSize: 11; font.family: "monospace"; clip: true
-                        Text { anchors.fill: parent; verticalAlignment: Text.AlignVCenter
-                               text: parent.text.length === 0 ? "recipient account id" : ""
-                               color: root.textDisabled; font.pixelSize: 11; font.family: "monospace" }
+                // Send + Claim Faucet buttons
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    // Send button — subtle when form open, prominent when Sending…
+                    Rectangle {
+                        Layout.fillWidth: true; height: 34; radius: 4
+                        color: root.sendBusy ? Qt.rgba(249/255, 115/255, 22/255, 0.08) : "transparent"
+                        border.color: root.sendBusy ? root.accentOrange
+                                    : root.sendOpen ? root.borderColor
+                                    : root.accentOrange
+
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 6
+
+                            Rectangle {
+                                visible: root.sendBusy
+                                width: 6; height: 6; radius: 3
+                                color: root.accentOrange
+                                anchors.verticalCenter: parent.verticalCenter
+                                SequentialAnimation on opacity {
+                                    running: root.sendBusy; loops: Animation.Infinite
+                                    NumberAnimation { to: 0.2; duration: 500 }
+                                    NumberAnimation { to: 1.0; duration: 500 }
+                                }
+                            }
+
+                            Text {
+                                text: root.sendBusy ? "Sending…" : "Send"
+                                color: root.sendBusy ? root.accentOrange
+                                     : root.sendOpen  ? root.textSecondary
+                                     : root.accentOrange
+                                font.pixelSize: 12; font.bold: !root.sendOpen || root.sendBusy
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            enabled: !root.sendBusy
+                            onClicked: root.sendOpen = !root.sendOpen
+                        }
                     }
-                }
 
-                // Amount
-                Text { text: "Amount"; color: root.textSecondary; font.pixelSize: 10 }
-                Rectangle { Layout.fillWidth: true; height: 26; color: "#0A0A0A"
-                    border.color: root.borderColor; radius: 3
-                    TextInput { id: amountField
-                        anchors { fill: parent; leftMargin: 6; rightMargin: 6 }
-                        verticalAlignment: TextInput.AlignVCenter
-                        color: root.textPrimary; font.pixelSize: 11; font.family: "monospace"; clip: true
-                        inputMethodHints: Qt.ImhDigitsOnly
-                        Text { anchors.fill: parent; verticalAlignment: Text.AlignVCenter
-                               text: parent.text.length === 0 ? "e.g. 10" : ""
-                               color: root.textDisabled; font.pixelSize: 11; font.family: "monospace" }
-                    }
-                }
-
-                // Send button
-                Rectangle {
-                    Layout.fillWidth: true; height: 36; radius: 4
-                    color: root.sendBusy ? "transparent" : Qt.rgba(56/255, 189/255, 248/255, 0.12)
-                    border.color: root.sendBusy ? root.borderColor : root.accentBlue
-                    opacity: root.sendBusy ? 0.6 : 1.0
-
-                    Text { anchors.centerIn: parent
-                           text: root.sendBusy ? "Waiting for Keycard…" : "Authorize & Send"
-                           color: root.sendBusy ? root.textDisabled : root.accentBlue
-                           font.pixelSize: 12; font.bold: !root.sendBusy }
-
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        enabled: !root.sendBusy
-                        onClicked: {
-                            var fromId = (fromModel.count > 0 && fromCombo.currentIndex >= 0)
-                                       ? fromModel.get(fromCombo.currentIndex).id : ""
-                            var toId = toField.text.trim()
-                            var amt  = amountField.text.trim()
-                            if (!fromId) { root.sendStatus = "Select a From account"; return }
-                            if (!toId)   { root.sendStatus = "Enter a To address"; return }
-                            if (!amt)    { root.sendStatus = "Enter an amount"; return }
-                            root.authorizeAndSend(fromId, toId, amt)
+                    Rectangle {
+                        Layout.fillWidth: true; height: 34; radius: 4
+                        color: "transparent"; border.color: root.borderColor
+                        Text { anchors.centerIn: parent; text: "Claim Faucet"; color: root.textSecondary; font.pixelSize: 12 }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                var acctId = root.selectedFromId
+                                if (!acctId && accountModel.count > 0) acctId = accountModel.get(0).id
+                                if (!acctId) { root.logActivity("No accounts — create one first", true); return }
+                                root.logActivity("Claiming faucet → " + root.displayId(acctId).substring(0, 20) + "…", false)
+                                var r = root.callModuleParse(logos.callModule("logos_wallet", "claimFaucet", [acctId]))
+                                if (r && r.error) root.logActivity("claimFaucet: " + r.error, true)
+                                else {
+                                    root.logActivity("Faucet claim submitted (150 TOK)", false)
+                                    balanceRefreshTimer.restart()
+                                    root.refreshTxHistory()
+                                }
+                            }
                         }
                     }
                 }
 
-                // Send status
-                Text { visible: root.sendStatus.length > 0; text: root.sendStatus
-                       color: root.sendBusy ? root.warnAmber : root.textSecondary
-                       font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
+                // Send form — expands when sendOpen
+                ColumnLayout {
+                    visible: root.sendOpen
+                    Layout.fillWidth: true
+                    spacing: 6
 
-                Item { Layout.fillHeight: true }
+                    Text { text: "To"; color: root.textSecondary; font.pixelSize: 10 }
+                    Rectangle {
+                        Layout.fillWidth: true; height: 26; color: "#0A0A0A"
+                        border.color: toField.activeFocus ? root.accentOrange : root.borderColor; radius: 3
+                        TextInput {
+                            id: toField
+                            anchors { fill: parent; leftMargin: 6; rightMargin: 6 }
+                            verticalAlignment: TextInput.AlignVCenter
+                            color: root.textPrimary; font.pixelSize: 11; font.family: "monospace"; clip: true
+                            Text {
+                                anchors.fill: parent; verticalAlignment: Text.AlignVCenter
+                                text: parent.text.length === 0 ? "recipient account id" : ""
+                                color: root.textDisabled; font.pixelSize: 11; font.family: "monospace"
+                            }
+                        }
+                    }
+
+                    Text { text: "Amount (TOK)"; color: root.textSecondary; font.pixelSize: 10 }
+                    Rectangle {
+                        Layout.fillWidth: true; height: 26; color: "#0A0A0A"
+                        border.color: amountField.activeFocus ? root.accentOrange : root.borderColor; radius: 3
+                        TextInput {
+                            id: amountField
+                            anchors { fill: parent; leftMargin: 6; rightMargin: 6 }
+                            verticalAlignment: TextInput.AlignVCenter
+                            color: root.textPrimary; font.pixelSize: 11; font.family: "monospace"; clip: true
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            Text {
+                                anchors.fill: parent; verticalAlignment: Text.AlignVCenter
+                                text: parent.text.length === 0 ? "e.g. 10" : ""
+                                color: root.textDisabled; font.pixelSize: 11; font.family: "monospace"
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: confirmBtn
+                        Layout.fillWidth: true; height: 36; radius: 4
+                        property bool canSend: root.selectedFromId.length > 0
+                                               && toField.text.trim().length > 0
+                                               && amountField.text.trim().length > 0
+                        color: canSend ? Qt.rgba(249/255, 115/255, 22/255, 0.12) : "transparent"
+                        border.color: canSend ? root.accentOrange : root.borderColor
+                        opacity: canSend ? 1.0 : 0.4
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Confirm Send"
+                            color: confirmBtn.canSend ? root.accentOrange : root.textDisabled
+                            font.pixelSize: 12; font.bold: confirmBtn.canSend
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: confirmBtn.canSend ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            enabled: confirmBtn.canSend
+                            onClicked: {
+                                root.executeSend(
+                                    root.selectedFromId,
+                                    toField.text.trim(),
+                                    amountField.text.trim()
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Transaction history for selected account
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    color: root.panelColor; border.color: root.borderColor; border.width: 1; radius: 6
+
+                    ColumnLayout {
+                        anchors { fill: parent; margins: 8 }
+                        spacing: 6
+
+                        Text {
+                            text: "TRANSACTIONS"
+                            color: root.textDisabled; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                        }
+
+                        Text {
+                            visible: txHistoryModel.count === 0
+                            text: "No transactions yet"
+                            color: root.textDisabled; font.pixelSize: 11
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+
+                        ListView {
+                            id: txHistoryView
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            model: ListModel { id: txHistoryModel }
+                            clip: true; spacing: 4
+
+                            delegate: Rectangle {
+                                required property string type
+                                required property string amount
+                                required property string ts
+                                required property string sender
+                                required property string receiver
+                                width: txHistoryView.width
+                                height: txRow.implicitHeight + 10
+                                color: "transparent"
+                                radius: 3
+
+                                property bool isSent: type !== "faucet" && sender === root.selectedFromId
+                                property string direction: type === "faucet" ? "Faucet"
+                                                         : isSent ? "Sent" : "Received"
+                                property string counterparty: isSent ? receiver : sender
+
+                                ColumnLayout {
+                                    id: txRow
+                                    anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: 5; leftMargin: 4; rightMargin: 4 }
+                                    spacing: 2
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Text {
+                                            text: direction
+                                            color: root.textSecondary
+                                            font.pixelSize: 11; font.bold: true
+                                        }
+                                        Text {
+                                            text: amount + " TOK"
+                                            color: root.textPrimary; font.pixelSize: 11; font.bold: true
+                                            Layout.fillWidth: true
+                                        }
+                                        Text {
+                                            text: ts.length > 10 ? ts.substring(11, 16) : ts
+                                            color: root.textDisabled; font.pixelSize: 10
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: type !== "faucet"
+                                        text: (isSent ? "→ " : "← ") + root.displayId(counterparty)
+                                        color: root.textDisabled; font.pixelSize: 10; font.family: "monospace"
+                                        Layout.fillWidth: true; elide: Text.ElideMiddle
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors { bottom: parent.bottom; left: parent.left; right: parent.right }
+                                    height: 1; color: root.borderColor
+                                    visible: index < txHistoryModel.count - 1
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // ── Activity log — fixed height, always visible ───────────────────────
+        // ── Activity log (module ops) ──────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            height: 110
+            Layout.bottomMargin: -12
+            height: 100
             color: "#0D0D0D"
 
             Rectangle {
@@ -561,34 +696,64 @@ Rectangle {
                 height: 1; color: root.borderColor
             }
 
+            Item {
+                anchors { top: parent.top; right: parent.right; topMargin: 4; rightMargin: 6 }
+                width: 20; height: 20; z: 1
+                Image {
+                    anchors.centerIn: parent; width: 14; height: 14
+                    source: "icons/Copy.svg"; fillMode: Image.PreserveAspectFit
+                    opacity: logCopyArea.pressed ? 0.6 : logCopyArea.containsMouse ? 1.0 : 0.35
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                }
+                MouseArea {
+                    id: logCopyArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var text = "# activity log\n"
+                        for (var i = 0; i < activityModel.count; i++) {
+                            var e = activityModel.get(i)
+                            text += "[" + e.ts + "] " + e.msg + "\n"
+                        }
+                        clipHelper.text = text; clipHelper.selectAll(); clipHelper.copy()
+                    }
+                }
+            }
+
             ListView {
                 id: activityView
                 anchors { fill: parent; margins: 8 }
                 model: ListModel { id: activityModel }
                 clip: true; spacing: 1
-
-                delegate: Text {
+                delegate: RowLayout {
                     required property string ts
                     required property string msg
                     required property bool   error
                     width: activityView.width
-                    text: "[" + ts + "] " + msg
-                    color: error ? root.errorRed : root.textSecondary
-                    font.pixelSize: 11; font.family: "Courier New, monospace"
-                    wrapMode: Text.WrapAnywhere
+                    spacing: 6
+                    Text {
+                        text: ts
+                        color: root.textDisabled; font.pixelSize: 10; font.family: "monospace"
+                        Layout.alignment: Qt.AlignTop
+                    }
+                    Text {
+                        text: msg
+                        color: error ? root.errorRed : root.textSecondary
+                        font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                    }
                 }
             }
         }
 
     } // ColumnLayout
 
-    // ── onCompleted: populate fromModel from accountModel after accounts load ─
+    // ── Auto-select first account on initial load only ────────────────────────
     Connections {
         target: accountModel
         function onCountChanged() {
-            fromModel.clear()
-            for (var i = 0; i < accountModel.count; i++)
-                fromModel.append({ id: accountModel.get(i).id })
+            // Only act when nothing is selected yet (first load)
+            if (root.selectedFromId.length === 0 && accountModel.count > 0) {
+                root.selectedFromId      = accountModel.get(0).id
+                root.selectedFromBalance = accountModel.get(0).balance
+            }
         }
     }
 }

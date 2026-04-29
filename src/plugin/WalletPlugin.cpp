@@ -212,17 +212,63 @@ QString WalletPlugin::claimFaucet(const QString& accountId)
     if (accountId.trimmed().isEmpty())
         return errorJson(QStringLiteral("accountId is required"));
 
-    // CLI expects: wallet pinata claim --to public/ID
-    QString toArg = accountId.startsWith(QStringLiteral("public/"))
-                  ? accountId.trimmed()
-                  : QStringLiteral("public/") + accountId.trimmed();
+    // CLI expects: wallet pinata claim --to Public/ID  (capital P)
+    QString id = accountId.trimmed();
+    QString toArg = (id.startsWith(QStringLiteral("Public/")) || id.startsWith(QStringLiteral("Private/")))
+                  ? id
+                  : QStringLiteral("Public/") + id;
 
-    return runWalletCommand({
+    QString result = runWalletCommand({
         QStringLiteral("pinata"),
         QStringLiteral("claim"),
         QStringLiteral("--to"),
         toArg
-    }, 60000); // faucet can take longer
+    }, 60000);
+
+    QJsonDocument doc = QJsonDocument::fromJson(result.toUtf8());
+    if (!doc.isNull() && doc.object().value(QStringLiteral("ok")).toBool()) {
+        QJsonObject entry;
+        entry[QStringLiteral("type")]     = QStringLiteral("faucet");
+        entry[QStringLiteral("receiver")] = accountId.trimmed();
+        entry[QStringLiteral("amount")]   = QStringLiteral("150");
+        entry[QStringLiteral("txId")]     = doc.object().value(QStringLiteral("txHash")).toString();
+        entry[QStringLiteral("ts")]       = QDateTime::currentDateTime().toString(Qt::ISODate);
+        saveTx(accountId.trimmed(), entry);
+    }
+
+    return result;
+}
+
+// ── Transaction history (local store) ─────────────────────────────────────────
+
+static QString txHistoryKey(const QString& accountId)
+{
+    // Sanitise accountId so it is safe as a QSettings key segment
+    QString safe = accountId;
+    safe.replace(QLatin1Char('/'), QLatin1Char('_'));
+    return QStringLiteral("logos-wallet/txHistory/") + safe;
+}
+
+void WalletPlugin::saveTx(const QString& accountId, const QJsonObject& entry)
+{
+    QSettings s;
+    QString key = txHistoryKey(accountId);
+    QJsonArray arr = QJsonDocument::fromJson(
+        s.value(key).toByteArray()).array();
+    arr.prepend(entry);                // newest first
+    if (arr.size() > 50) arr.removeLast();
+    s.setValue(key, QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    s.sync();
+}
+
+QString WalletPlugin::getTransactions(const QString& accountId)
+{
+    if (accountId.trimmed().isEmpty())
+        return errorJson(QStringLiteral("accountId is required"));
+    QSettings s;
+    QByteArray raw = s.value(txHistoryKey(accountId.trimmed())).toByteArray();
+    QJsonArray arr = QJsonDocument::fromJson(raw).array();
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
 }
 
 // ── Transfer ──────────────────────────────────────────────────────────────────
@@ -240,7 +286,7 @@ QString WalletPlugin::sendTransfer(const QString& from,
 
     appendLog(QStringLiteral("transfer: %1 → %2 (%3 tok)").arg(from, to, amount));
 
-    return runWalletCommand({
+    QString result = runWalletCommand({
         QStringLiteral("auth-transfer"),
         QStringLiteral("send"),
         QStringLiteral("--from"),
@@ -249,5 +295,21 @@ QString WalletPlugin::sendTransfer(const QString& from,
         to.trimmed(),
         QStringLiteral("--amount"),
         amount.trimmed()
-    }, 60000); // transfers can take time
+    }, 60000);
+
+    // On success, persist to local tx history for both accounts
+    QJsonDocument doc = QJsonDocument::fromJson(result.toUtf8());
+    if (!doc.isNull() && doc.object().value(QStringLiteral("ok")).toBool()) {
+        QJsonObject entry;
+        entry[QStringLiteral("type")]     = QStringLiteral("send");
+        entry[QStringLiteral("sender")]   = from.trimmed();
+        entry[QStringLiteral("receiver")] = to.trimmed();
+        entry[QStringLiteral("amount")]   = amount.trimmed();
+        entry[QStringLiteral("txId")]     = doc.object().value(QStringLiteral("txId")).toString();
+        entry[QStringLiteral("ts")]       = QDateTime::currentDateTime().toString(Qt::ISODate);
+        saveTx(from.trimmed(), entry);
+        saveTx(to.trimmed(), entry);
+    }
+
+    return result;
 }
