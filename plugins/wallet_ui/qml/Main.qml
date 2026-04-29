@@ -659,8 +659,11 @@ Rectangle {
                                             Layout.fillWidth: true
                                         }
                                         Text {
-                                            text: ts.length > 10 ? ts.substring(11, 16) : ts
+                                            text: ts.length > 16
+                                                  ? ts.substring(0, 10) + "  " + ts.substring(11, 16)
+                                                  : ts
                                             color: root.textDisabled; font.pixelSize: 10
+                                            font.family: "monospace"
                                         }
                                     }
 
@@ -728,16 +731,19 @@ Rectangle {
                     required property string msg
                     required property bool   error
                     width: activityView.width
-                    spacing: 6
+                    spacing: 8
+                    Layout.alignment: Qt.AlignTop
                     Text {
-                        text: ts
-                        color: root.textDisabled; font.pixelSize: 10; font.family: "monospace"
+                        text: "[" + ts + "]"
+                        color: root.textDisabled; font.pixelSize: 11; font.family: "monospace"
                         Layout.alignment: Qt.AlignTop
                     }
                     Text {
                         text: msg
                         color: error ? root.errorRed : root.textSecondary
-                        font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                        font.pixelSize: 11; font.family: "monospace"
+                        Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                        Layout.alignment: Qt.AlignTop
                     }
                 }
             }

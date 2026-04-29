@@ -229,6 +229,7 @@ QString WalletPlugin::claimFaucet(const QString& accountId)
     if (!doc.isNull() && doc.object().value(QStringLiteral("ok")).toBool()) {
         QJsonObject entry;
         entry[QStringLiteral("type")]     = QStringLiteral("faucet");
+        entry[QStringLiteral("sender")]   = QStringLiteral("");   // pinata has no sender
         entry[QStringLiteral("receiver")] = accountId.trimmed();
         entry[QStringLiteral("amount")]   = QStringLiteral("150");
         entry[QStringLiteral("txId")]     = doc.object().value(QStringLiteral("txHash")).toString();
