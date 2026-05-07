@@ -87,12 +87,12 @@ else()
     add_test(NAME test_wallet_plugin COMMAND test_wallet_plugin)
 
     # ── Install paths ──────────────────────────────────────────────────────────
-    set(LOGOS_APP_DATA "$ENV{HOME}/.local/share/Logos/LogosApp")
-    set(WALLET_MODULE_DIR "${LOGOS_APP_DATA}/modules/logos_wallet")
-    set(WALLET_UI_DIR     "${LOGOS_APP_DATA}/plugins/wallet_ui")
+    set(LOGOS_BASECAMP_DATA "$ENV{HOME}/.local/share/Logos/LogosBasecamp")
+    set(WALLET_MODULE_DIR "${LOGOS_BASECAMP_DATA}/modules/logos_wallet")
+    set(WALLET_UI_DIR     "${LOGOS_BASECAMP_DATA}/plugins/wallet_ui")
 
     install(CODE "
-        set(_modules_dir \"\\$ENV{DESTDIR}${LOGOS_APP_DATA}/modules\")
+        set(_modules_dir \"\\$ENV{DESTDIR}${LOGOS_BASECAMP_DATA}/modules\")
         file(GLOB _old \"\${_modules_dir}/logos_wallet*\")
         foreach(_dir \${_old})
             file(REMOVE_RECURSE \"\${_dir}\")
@@ -120,7 +120,7 @@ else()
         DESTINATION "${WALLET_UI_DIR}/icons"
     )
 
-    # Patch RUNPATH so Qt libs resolve correctly when loaded from LogosApp AppImage
+    # Patch RUNPATH so Qt libs resolve correctly when loaded from Basecamp AppImage
     find_program(PATCHELF_EXECUTABLE patchelf)
     if(PATCHELF_EXECUTABLE)
         install(CODE "
@@ -141,19 +141,4 @@ else()
             endif()
         ")
     endif()
-
-    # Mirror to LogosBasecamp
-    install(CODE "
-        set(_mod_src \"${WALLET_MODULE_DIR}\")
-        set(_mod_dst \"\$ENV{HOME}/.local/share/Logos/LogosBasecamp/modules/logos_wallet\")
-        file(COPY \"\${_mod_src}/\" DESTINATION \"\${_mod_dst}\")
-
-        set(_ui_src \"${WALLET_UI_DIR}\")
-        set(_ui_dst \"\$ENV{HOME}/.local/share/Logos/LogosBasecamp/plugins/wallet_ui\")
-        file(GLOB _ui_files \"\${_ui_src}/*\")
-        foreach(_f \${_ui_files})
-            file(COPY \"\${_f}\" DESTINATION \"\${_ui_dst}\")
-        endforeach()
-        message(STATUS \"Mirror to LogosBasecamp complete\")
-    ")
 endif()
