@@ -3,6 +3,7 @@
 
 #include "logos_api.h"
 #include "cpp/logos_api_client.h"
+#include "cpp/logos_object.h"
 #include "cpp/logos_api_provider.h"
 #include "cpp/token_manager.h"
 
@@ -35,6 +36,4 @@ QVariant LogosAPIClient::invokeRemoteMethod(
     const QString&, const QString&, const QVariant&, const QVariant&,
     const QVariant&, const QVariant&, const QVariant&, Timeout) { return {}; }
 
-void LogosAPIClient::onEvent(
-    QObject*, QObject*, const QString&,
-    std::function<void(const QString&, const QVariantList&)>) {}
+// onEvent not used by WalletPlugin — no stub needed

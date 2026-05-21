@@ -27,14 +27,14 @@ else()
         set(LOGOS_LIBLOGOS_HEADERS "$ENV{LOGOS_LIBLOGOS_HEADERS}")
     else()
         set(LOGOS_LIBLOGOS_HEADERS
-            "/nix/store/092zxk8qbm9zxqigq1z0a5l901a068cz-logos-liblogos-headers-0.1.0/include")
+            "/nix/store/lkr4jwcdh7k1yw5lisvpvaya4pq8qiv4-logos-liblogos-headers-0.1.0/include")
     endif()
 
     if(DEFINED ENV{LOGOS_CPP_SDK_ROOT})
         set(LOGOS_CPP_SDK "$ENV{LOGOS_CPP_SDK_ROOT}")
     else()
         set(LOGOS_CPP_SDK
-            "/nix/store/047dmhc4gi7yib02i1fbwidxpksqvcc2-logos-cpp-sdk")
+            "/nix/store/c23ijr4km1wc2jixw4siqmbw3yaqf4z2-logos-cpp-sdk")
     endif()
 
     add_library(logos_wallet_plugin MODULE
